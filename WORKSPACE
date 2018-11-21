@@ -20,6 +20,16 @@ cartographer_repositories()
 
 # This can't be inside cartographer_repositories() because of:
 # https://github.com/bazelbuild/bazel/issues/1550
-load("@com_github_nelhage_boost//:boost/boost.bzl", "boost_deps")
+load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
 
 boost_deps()
+
+load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps")
+
+grpc_deps()
+
+load("@com_github_jupp0r_prometheus_cpp//:repositories.bzl", "load_prometheus_client_model", "load_civetweb")
+
+load_prometheus_client_model()
+
+load_civetweb()

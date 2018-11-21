@@ -42,10 +42,33 @@ cc_fix_config(
     cmake = True,
     files = {"common/config.h.cmake": "common/config.h"},
     values = {
-        "CARTOGRAPHER_CONFIGURATION_FILES_DIRECTORY": "todo_set_config_dir_in_cartographer.BUILD",
+        "CARTOGRAPHER_CONFIGURATION_FILES_DIRECTORY": "configuration_files",
         "PROJECT_SOURCE_DIR": "todo_set_project_source_dir_in_cartographer.BUILD",
     },
     visibility = ["//visibility:private"],
+)
+
+TEST_LIBRARY_SRCS = glob([
+    "**/*test_helpers.cc",
+    "**/fake_*.cc",
+    "**/mock_*.cc",
+])
+
+TEST_LIBRARY_HDRS = glob([
+    "**/*test_helpers.h",
+    "**/fake_*.h",
+    "**/mock_*.h",
+])
+
+cc_library(
+    name = "cartographer_test_library",
+    testonly = 1,
+    srcs = TEST_LIBRARY_SRCS,
+    hdrs = TEST_LIBRARY_HDRS,
+    deps = [
+        ":cartographer",
+        "@com_google_googletest//:gtest",
+    ],
 )
 
 cc_library(
@@ -57,17 +80,27 @@ cc_library(
         exclude = [
             "**/*_main.cc",
             "**/*_test.cc",
-        ],
+        ] + TEST_LIBRARY_SRCS,
     ),
     hdrs = [
         "common/config.h",
-    ] + glob([
-        "**/*.h",
-    ]),
+    ] + glob(
+        [
+            "**/*.h",
+        ],
+        exclude = TEST_LIBRARY_HDRS,
+    ),
+    copts = ["-Wno-sign-compare"],
     includes = ["."],
     deps = [
         ":cc_protos",
         "@boost//:iostreams",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:optional",
         "@com_google_glog//:glog",
         "@org_cairographics_cairo//:cairo",
         "@org_ceres_solver_ceres_solver//:ceres",
@@ -76,21 +109,16 @@ cc_library(
     ],
 )
 
-# TODO(rodrigoq): these tests need to read the configuration files, but they're
-# not able to find them.
-EXCLUDED_TESTS = [
-    "common/configuration_files_test.cc",
-    "mapping/map_builder_test.cc",
-]
-
 [cc_test(
     name = src.replace("/", "_").replace(".cc", ""),
     srcs = [src],
+    data = ["//:configuration_files"],
     deps = [
         ":cartographer",
+        ":cartographer_test_library",
+        "@com_google_absl//absl/memory",
         "@com_google_googletest//:gtest_main",
     ],
 ) for src in glob(
     ["**/*_test.cc"],
-    exclude = EXCLUDED_TESTS,
 )]

@@ -19,10 +19,10 @@
 
 #include <memory>
 #include <set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "cartographer/common/lua_parameter_dictionary.h"
 #include "cartographer/mapping/id.h"
 #include "cartographer/mapping/pose_graph_interface.h"
@@ -37,7 +37,6 @@
 #include "cartographer/sensor/landmark_data.h"
 #include "cartographer/sensor/map_by_time.h"
 #include "cartographer/sensor/odometry_data.h"
-#include "cartographer/transform/rigid_transform.h"
 
 namespace cartographer {
 namespace mapping {
@@ -54,7 +53,7 @@ class PoseGraph : public PoseGraphInterface {
   };
 
   PoseGraph() {}
-  virtual ~PoseGraph() override {}
+  ~PoseGraph() override {}
 
   PoseGraph(const PoseGraph&) = delete;
   PoseGraph& operator=(const PoseGraph&) = delete;
@@ -83,14 +82,18 @@ class PoseGraph : public PoseGraphInterface {
   virtual void FreezeTrajectory(int trajectory_id) = 0;
 
   // Adds a 'submap' from a proto with the given 'global_pose' to the
-  // appropriate frozen trajectory.
+  // appropriate trajectory.
   virtual void AddSubmapFromProto(const transform::Rigid3d& global_pose,
                                   const proto::Submap& submap) = 0;
 
   // Adds a 'node' from a proto with the given 'global_pose' to the
-  // appropriate frozen trajectory.
+  // appropriate trajectory.
   virtual void AddNodeFromProto(const transform::Rigid3d& global_pose,
                                 const proto::Node& node) = 0;
+
+  // Sets the trajectory data from a proto.
+  virtual void SetTrajectoryDataFromProto(
+      const mapping::proto::TrajectoryData& data) = 0;
 
   // Adds information that 'node_id' was inserted into 'submap_id'. The submap
   // has to be deserialized first.
@@ -107,24 +110,28 @@ class PoseGraph : public PoseGraphInterface {
   virtual void AddTrimmer(std::unique_ptr<PoseGraphTrimmer> trimmer) = 0;
 
   // Gets the current trajectory clusters.
-  virtual std::vector<std::vector<int>> GetConnectedTrajectories() = 0;
+  virtual std::vector<std::vector<int>> GetConnectedTrajectories() const = 0;
 
   // Returns the current optimized transform and submap itself for the given
   // 'submap_id'. Returns 'nullptr' for the 'submap' member if the submap does
   // not exist (anymore).
-  virtual SubmapData GetSubmapData(const SubmapId& submap_id) = 0;
+  virtual SubmapData GetSubmapData(const SubmapId& submap_id) const = 0;
 
-  proto::PoseGraph ToProto() override;
+  proto::PoseGraph ToProto(bool include_unfinished_submaps) const override;
 
   // Returns the IMU data.
-  virtual sensor::MapByTime<sensor::ImuData> GetImuData() = 0;
+  virtual sensor::MapByTime<sensor::ImuData> GetImuData() const = 0;
 
   // Returns the odometry data.
-  virtual sensor::MapByTime<sensor::OdometryData> GetOdometryData() = 0;
+  virtual sensor::MapByTime<sensor::OdometryData> GetOdometryData() const = 0;
 
   // Returns the fixed frame pose data.
-  virtual sensor::MapByTime<sensor::FixedFramePoseData>
-  GetFixedFramePoseData() = 0;
+  virtual sensor::MapByTime<sensor::FixedFramePoseData> GetFixedFramePoseData()
+      const = 0;
+
+  // Returns the landmark data.
+  virtual std::map<std::string /* landmark ID */, PoseGraph::LandmarkNode>
+  GetLandmarkNodes() const = 0;
 
   // Sets a relative initial pose 'relative_pose' for 'from_trajectory_id' with
   // respect to 'to_trajectory_id' at time 'time'.
