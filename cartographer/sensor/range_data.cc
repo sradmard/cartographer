@@ -31,27 +31,11 @@ RangeData TransformRangeData(const RangeData& range_data,
   };
 }
 
-TimedRangeData TransformTimedRangeData(const TimedRangeData& range_data,
-                                       const transform::Rigid3f& transform) {
-  return TimedRangeData{
-      transform * range_data.origin,
-      TransformTimedPointCloud(range_data.returns, transform),
-      TransformTimedPointCloud(range_data.misses, transform),
-  };
-}
-
 RangeData CropRangeData(const RangeData& range_data, const float min_z,
                         const float max_z) {
   return RangeData{range_data.origin,
                    CropPointCloud(range_data.returns, min_z, max_z),
                    CropPointCloud(range_data.misses, min_z, max_z)};
-}
-
-TimedRangeData CropTimedRangeData(const TimedRangeData& range_data,
-                                  const float min_z, const float max_z) {
-  return TimedRangeData{range_data.origin,
-                        CropTimedPointCloud(range_data.returns, min_z, max_z),
-                        CropTimedPointCloud(range_data.misses, min_z, max_z)};
 }
 
 proto::RangeData ToProto(const RangeData& range_data) {
@@ -69,7 +53,7 @@ proto::RangeData ToProto(const RangeData& range_data) {
 }
 
 RangeData FromProto(const proto::RangeData& proto) {
-  PointCloud returns;
+  std::vector<RangefinderPoint> returns;
   if (proto.returns_size() > 0) {
     returns.reserve(proto.returns().size());
     for (const auto& point_proto : proto.returns()) {
@@ -81,7 +65,7 @@ RangeData FromProto(const proto::RangeData& proto) {
       returns.push_back({transform::ToEigen(point_proto)});
     }
   }
-  PointCloud misses;
+  std::vector<RangefinderPoint> misses;
   if (proto.misses_size() > 0) {
     misses.reserve(proto.misses().size());
     for (const auto& point_proto : proto.misses()) {
@@ -93,7 +77,8 @@ RangeData FromProto(const proto::RangeData& proto) {
       misses.push_back({transform::ToEigen(point_proto)});
     }
   }
-  return RangeData{transform::ToEigen(proto.origin()), returns, misses};
+  return RangeData{transform::ToEigen(proto.origin()), PointCloud(returns),
+                   PointCloud(misses)};
 }
 
 }  // namespace sensor

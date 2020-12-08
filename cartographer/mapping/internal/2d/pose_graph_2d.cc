@@ -42,6 +42,12 @@ namespace cartographer {
 namespace mapping {
 
 static auto* kWorkQueueDelayMetric = metrics::Gauge::Null();
+static auto* kWorkQueueSizeMetric = metrics::Gauge::Null();
+static auto* kConstraintsSameTrajectoryMetric = metrics::Gauge::Null();
+static auto* kConstraintsDifferentTrajectoryMetric = metrics::Gauge::Null();
+static auto* kActiveSubmapsMetric = metrics::Gauge::Null();
+static auto* kFrozenSubmapsMetric = metrics::Gauge::Null();
+static auto* kDeletedSubmapsMetric = metrics::Gauge::Null();
 
 PoseGraph2D::PoseGraph2D(
     const proto::PoseGraphOptions& options,
@@ -140,6 +146,7 @@ NodeId PoseGraph2D::AppendNode(
         data_.submap_data.Append(trajectory_id, InternalSubmapData());
     data_.submap_data.at(submap_id).submap = insertion_submaps.back();
     LOG(INFO) << "Inserted submap " << submap_id << ".";
+    kActiveSubmapsMetric->Increment();
   }
   return node_id;
 }
@@ -175,6 +182,7 @@ void PoseGraph2D::AddWorkItem(
   }
   const auto now = std::chrono::steady_clock::now();
   work_queue_->push_back({now, work_item});
+  kWorkQueueSizeMetric->Set(work_queue_->size());
   kWorkQueueDelayMetric->Set(
       std::chrono::duration_cast<std::chrono::duration<double>>(
           now - work_queue_->front().time)
@@ -223,7 +231,14 @@ void PoseGraph2D::AddOdometryData(const int trajectory_id,
 void PoseGraph2D::AddFixedFramePoseData(
     const int trajectory_id,
     const sensor::FixedFramePoseData& fixed_frame_pose_data) {
-  LOG(FATAL) << "Not yet implemented for 2D.";
+  AddWorkItem([=]() LOCKS_EXCLUDED(mutex_) {
+    absl::MutexLock locker(&mutex_);
+    if (CanAddWorkItemModifying(trajectory_id)) {
+      optimization_problem_->AddFixedFramePoseData(trajectory_id,
+                                                   fixed_frame_pose_data);
+    }
+    return WorkItem::Result::kDoNotRunOptimization;
+  });
 }
 
 void PoseGraph2D::AddLandmarkData(int trajectory_id,
@@ -478,6 +493,25 @@ void PoseGraph2D::HandleWorkQueue(
         trimmers_.end());
 
     num_nodes_since_last_loop_closure_ = 0;
+
+    // Update the gauges that count the current number of constraints.
+    double inter_constraints_same_trajectory = 0;
+    double inter_constraints_different_trajectory = 0;
+    for (const auto& constraint : data_.constraints) {
+      if (constraint.tag ==
+          cartographer::mapping::PoseGraph::Constraint::INTRA_SUBMAP) {
+        continue;
+      }
+      if (constraint.node_id.trajectory_id ==
+          constraint.submap_id.trajectory_id) {
+        ++inter_constraints_same_trajectory;
+      } else {
+        ++inter_constraints_different_trajectory;
+      }
+    }
+    kConstraintsSameTrajectoryMetric->Set(inter_constraints_same_trajectory);
+    kConstraintsDifferentTrajectoryMetric->Set(
+        inter_constraints_different_trajectory);
   }
 
   DrainWorkQueue();
@@ -497,6 +531,7 @@ void PoseGraph2D::DrainWorkQueue() {
       work_item = work_queue_->front().task;
       work_queue_->pop_front();
       work_queue_size = work_queue_->size();
+      kWorkQueueSizeMetric->Set(work_queue_size);
     }
     process_work_queue = work_item() == WorkItem::Result::kDoNotRunOptimization;
   }
@@ -624,6 +659,22 @@ void PoseGraph2D::FreezeTrajectory(const int trajectory_id) {
   AddWorkItem([this, trajectory_id]() LOCKS_EXCLUDED(mutex_) {
     absl::MutexLock locker(&mutex_);
     CHECK(!IsTrajectoryFrozen(trajectory_id));
+    // Connect multiple frozen trajectories among each other.
+    // This is required for localization against multiple frozen trajectories
+    // because we lose inter-trajectory constraints when freezing.
+    for (const auto& entry : data_.trajectories_state) {
+      const int other_trajectory_id = entry.first;
+      if (!IsTrajectoryFrozen(other_trajectory_id)) {
+        continue;
+      }
+      if (data_.trajectory_connectivity_state.TransitivelyConnected(
+              trajectory_id, other_trajectory_id)) {
+        // Already connected, nothing to do.
+        continue;
+      }
+      data_.trajectory_connectivity_state.Connect(
+          trajectory_id, other_trajectory_id, common::FromUniversal(0));
+    }
     data_.trajectories_state[trajectory_id].state = TrajectoryState::FROZEN;
     return WorkItem::Result::kDoNotRunOptimization;
   });
@@ -659,6 +710,15 @@ void PoseGraph2D::AddSubmapFromProto(
     data_.global_submap_poses_2d.Insert(
         submap_id, optimization::SubmapSpec2D{global_submap_pose_2d});
   }
+
+  // TODO(MichaelGrupp): MapBuilder does freezing before deserializing submaps,
+  // so this should be fine.
+  if (IsTrajectoryFrozen(submap_id.trajectory_id)) {
+    kFrozenSubmapsMetric->Increment();
+  } else {
+    kActiveSubmapsMetric->Increment();
+  }
+
   AddWorkItem(
       [this, submap_id, global_submap_pose_2d]() LOCKS_EXCLUDED(mutex_) {
         absl::MutexLock locker(&mutex_);
@@ -703,7 +763,24 @@ void PoseGraph2D::AddNodeFromProto(const transform::Rigid3d& global_pose,
 
 void PoseGraph2D::SetTrajectoryDataFromProto(
     const proto::TrajectoryData& data) {
-  LOG(ERROR) << "not implemented";
+  TrajectoryData trajectory_data;
+  // gravity_constant and imu_calibration are omitted as its not used in 2d
+
+  if (data.has_fixed_frame_origin_in_map()) {
+    trajectory_data.fixed_frame_origin_in_map =
+        transform::ToRigid3(data.fixed_frame_origin_in_map());
+
+    const int trajectory_id = data.trajectory_id();
+    AddWorkItem([this, trajectory_id, trajectory_data]()
+                    LOCKS_EXCLUDED(mutex_) {
+                      absl::MutexLock locker(&mutex_);
+                      if (CanAddWorkItemModifying(trajectory_id)) {
+                        optimization_problem_->SetTrajectoryData(
+                            trajectory_id, trajectory_data);
+                      }
+                      return WorkItem::Result::kDoNotRunOptimization;
+                    });
+  }
 }
 
 void PoseGraph2D::AddNodeToSubmap(const NodeId& node_id,
@@ -906,10 +983,12 @@ std::map<std::string, transform::Rigid3d> PoseGraph2D::GetLandmarkPoses()
 }
 
 void PoseGraph2D::SetLandmarkPose(const std::string& landmark_id,
-                                  const transform::Rigid3d& global_pose) {
+                                  const transform::Rigid3d& global_pose,
+                                  const bool frozen) {
   AddWorkItem([=]() LOCKS_EXCLUDED(mutex_) {
     absl::MutexLock locker(&mutex_);
     data_.landmark_nodes[landmark_id].global_landmark_pose = global_pose;
+    data_.landmark_nodes[landmark_id].frozen = frozen;
     return WorkItem::Result::kDoNotRunOptimization;
   });
 }
@@ -932,15 +1011,14 @@ PoseGraph2D::GetLandmarkNodes() const {
 
 std::map<int, PoseGraphInterface::TrajectoryData>
 PoseGraph2D::GetTrajectoryData() const {
-  // The 2D optimization problem does not have any 'TrajectoryData'.
-  return {};
+  absl::MutexLock locker(&mutex_);
+  return optimization_problem_->trajectory_data();
 }
 
 sensor::MapByTime<sensor::FixedFramePoseData>
 PoseGraph2D::GetFixedFramePoseData() const {
-  // FixedFramePoseData is not yet implemented for 2D. We need to return empty
-  // so serialization works.
-  return {};
+  absl::MutexLock locker(&mutex_);
+  return optimization_problem_->fixed_frame_pose_data();
 }
 
 std::vector<PoseGraphInterface::Constraint> PoseGraph2D::constraints() const {
@@ -1160,14 +1238,38 @@ void PoseGraph2D::TrimmingHandle::TrimSubmap(const SubmapId& submap_id) {
     parent_->data_.constraints = std::move(constraints);
   }
   // Remove all 'data_.constraints' related to 'nodes_to_remove'.
+  // If the removal lets other submaps lose all their inter-submap constraints,
+  // delete their corresponding constraint submap matchers to save memory.
   {
     std::vector<Constraint> constraints;
+    std::set<SubmapId> other_submap_ids_losing_constraints;
     for (const Constraint& constraint : parent_->data_.constraints) {
       if (nodes_to_remove.count(constraint.node_id) == 0) {
         constraints.push_back(constraint);
+      } else {
+        // A constraint to another submap will be removed, mark it as affected.
+        other_submap_ids_losing_constraints.insert(constraint.submap_id);
       }
     }
     parent_->data_.constraints = std::move(constraints);
+    // Go through the remaining constraints to ensure we only delete scan
+    // matchers of other submaps that have no inter-submap constraints left.
+    for (const Constraint& constraint : parent_->data_.constraints) {
+      if (constraint.tag == Constraint::Tag::INTRA_SUBMAP) {
+        continue;
+      } else if (other_submap_ids_losing_constraints.count(
+                     constraint.submap_id)) {
+        // This submap still has inter-submap constraints - ignore it.
+        other_submap_ids_losing_constraints.erase(constraint.submap_id);
+      }
+    }
+    // Delete scan matchers of the submaps that lost all constraints.
+    // TODO(wohe): An improvement to this implementation would be to add the
+    // caching logic at the constraint builder which could keep around only
+    // recently used scan matchers.
+    for (const SubmapId& submap_id : other_submap_ids_losing_constraints) {
+      parent_->constraint_builder_.DeleteScanMatcher(submap_id);
+    }
   }
 
   // Mark the submap with 'submap_id' as trimmed and remove its data.
@@ -1176,6 +1278,14 @@ void PoseGraph2D::TrimmingHandle::TrimSubmap(const SubmapId& submap_id) {
   parent_->data_.submap_data.Trim(submap_id);
   parent_->constraint_builder_.DeleteScanMatcher(submap_id);
   parent_->optimization_problem_->TrimSubmap(submap_id);
+
+  // We have one submap less, update the gauge metrics.
+  kDeletedSubmapsMetric->Increment();
+  if (parent_->IsTrajectoryFrozen(submap_id.trajectory_id)) {
+    kFrozenSubmapsMetric->Decrement();
+  } else {
+    kActiveSubmapsMetric->Decrement();
+  }
 
   // Remove the 'nodes_to_remove' from the pose graph and the optimization
   // problem.
@@ -1205,6 +1315,22 @@ void PoseGraph2D::RegisterMetrics(metrics::FamilyFactory* family_factory) {
       "mapping_2d_pose_graph_work_queue_delay",
       "Age of the oldest entry in the work queue in seconds");
   kWorkQueueDelayMetric = latency->Add({});
+  auto* queue_size =
+      family_factory->NewGaugeFamily("mapping_2d_pose_graph_work_queue_size",
+                                     "Number of items in the work queue");
+  kWorkQueueSizeMetric = queue_size->Add({});
+  auto* constraints = family_factory->NewGaugeFamily(
+      "mapping_2d_pose_graph_constraints",
+      "Current number of constraints in the pose graph");
+  kConstraintsDifferentTrajectoryMetric =
+      constraints->Add({{"tag", "inter_submap"}, {"trajectory", "different"}});
+  kConstraintsSameTrajectoryMetric =
+      constraints->Add({{"tag", "inter_submap"}, {"trajectory", "same"}});
+  auto* submaps = family_factory->NewGaugeFamily(
+      "mapping_2d_pose_graph_submaps", "Number of submaps in the pose graph.");
+  kActiveSubmapsMetric = submaps->Add({{"state", "active"}});
+  kFrozenSubmapsMetric = submaps->Add({{"state", "frozen"}});
+  kDeletedSubmapsMetric = submaps->Add({{"state", "deleted"}});
 }
 
 }  // namespace mapping

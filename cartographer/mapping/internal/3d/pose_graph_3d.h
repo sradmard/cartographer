@@ -36,9 +36,9 @@
 #include "cartographer/mapping/internal/constraints/constraint_builder_3d.h"
 #include "cartographer/mapping/internal/optimization/optimization_problem_3d.h"
 #include "cartographer/mapping/internal/trajectory_connectivity_state.h"
+#include "cartographer/mapping/internal/pose_graph_data.h"
 #include "cartographer/mapping/internal/work_queue.h"
 #include "cartographer/mapping/pose_graph.h"
-#include "cartographer/mapping/pose_graph_data.h"
 #include "cartographer/mapping/pose_graph_trimmer.h"
 #include "cartographer/metrics/family_factory.h"
 #include "cartographer/sensor/fixed_frame_pose_data.h"
@@ -131,7 +131,8 @@ class PoseGraph3D : public PoseGraph {
   std::map<std::string, transform::Rigid3d> GetLandmarkPoses() const override
       LOCKS_EXCLUDED(mutex_);
   void SetLandmarkPose(const std::string& landmark_id,
-                       const transform::Rigid3d& global_pose) override
+                       const transform::Rigid3d& global_pose,
+                       const bool frozen = false) override
       LOCKS_EXCLUDED(mutex_);
   sensor::MapByTime<sensor::ImuData> GetImuData() const override
       LOCKS_EXCLUDED(mutex_);

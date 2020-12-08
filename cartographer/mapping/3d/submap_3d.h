@@ -26,9 +26,9 @@
 #include "cartographer/mapping/3d/hybrid_grid.h"
 #include "cartographer/mapping/3d/range_data_inserter_3d.h"
 #include "cartographer/mapping/id.h"
-#include "cartographer/mapping/proto/3d/submaps_options_3d.pb.h"
 #include "cartographer/mapping/proto/serialization.pb.h"
 #include "cartographer/mapping/proto/submap_visualization.pb.h"
+#include "cartographer/mapping/proto/submaps_options_3d.pb.h"
 #include "cartographer/mapping/submaps.h"
 #include "cartographer/sensor/range_data.h"
 #include "cartographer/transform/rigid_transform.h"
@@ -60,6 +60,14 @@ class Submap3D : public Submap {
   const HybridGrid& low_resolution_hybrid_grid() const {
     return *low_resolution_hybrid_grid_;
   }
+  const IntensityHybridGrid& high_resolution_intensity_hybrid_grid() const {
+    CHECK(high_resolution_intensity_hybrid_grid_ != nullptr);
+    return *high_resolution_intensity_hybrid_grid_;
+  }
+  void ForgetIntensityHybridGrid() {
+    high_resolution_intensity_hybrid_grid_.reset();
+  }
+
   const Eigen::VectorXf& rotational_scan_matcher_histogram() const {
     return rotational_scan_matcher_histogram_;
   }
@@ -79,6 +87,7 @@ class Submap3D : public Submap {
 
   std::unique_ptr<HybridGrid> high_resolution_hybrid_grid_;
   std::unique_ptr<HybridGrid> low_resolution_hybrid_grid_;
+  std::unique_ptr<IntensityHybridGrid> high_resolution_intensity_hybrid_grid_;
   Eigen::VectorXf rotational_scan_matcher_histogram_;
 };
 

@@ -24,13 +24,15 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 
 #include "Eigen/Eigenvalues"
 #include "absl/memory/memory.h"
 #include "cartographer/common/math.h"
 #include "cartographer/common/thread_pool.h"
-#include "cartographer/mapping/proto/scan_matching//ceres_scan_matcher_options_2d.pb.h"
-#include "cartographer/mapping/proto/scan_matching//fast_correlative_scan_matcher_options_2d.pb.h"
+#include "cartographer/mapping/proto/scan_matching/ceres_scan_matcher_options_2d.pb.h"
+#include "cartographer/mapping/proto/scan_matching/fast_correlative_scan_matcher_options_2d.pb.h"
 #include "cartographer/metrics/counter.h"
 #include "cartographer/metrics/gauge.h"
 #include "cartographer/metrics/histogram.h"
@@ -48,6 +50,7 @@ static auto* kGlobalConstraintsFoundMetric = metrics::Counter::Null();
 static auto* kQueueLengthMetric = metrics::Gauge::Null();
 static auto* kConstraintScoresMetric = metrics::Histogram::Null();
 static auto* kGlobalConstraintScoresMetric = metrics::Histogram::Null();
+static auto* kNumSubmapScanMatchersMetric = metrics::Gauge::Null();
 
 transform::Rigid2d ComputeSubmapPose(const Submap2D& submap) {
   return transform::Project2D(submap.local_pose());
@@ -60,7 +63,6 @@ ConstraintBuilder2D::ConstraintBuilder2D(
       thread_pool_(thread_pool),
       finish_node_task_(absl::make_unique<common::Task>()),
       when_done_task_(absl::make_unique<common::Task>()),
-      sampler_(options.sampling_ratio()),
       ceres_scan_matcher_(options.ceres_scan_matcher_options()) {}
 
 ConstraintBuilder2D::~ConstraintBuilder2D() {
@@ -80,7 +82,12 @@ void ConstraintBuilder2D::MaybeAddConstraint(
       options_.max_constraint_distance()) {
     return;
   }
-  if (!sampler_.Pulse()) return;
+  if (!per_submap_sampler_
+           .emplace(std::piecewise_construct, std::forward_as_tuple(submap_id),
+                    std::forward_as_tuple(options_.sampling_ratio()))
+           .first->second.Pulse()) {
+    return;
+  }
 
   absl::MutexLock locker(&mutex_);
   if (when_done_) {
@@ -163,6 +170,7 @@ ConstraintBuilder2D::DispatchScanMatcherConstruction(const SubmapId& submap_id,
     return &submap_scan_matchers_.at(submap_id);
   }
   auto& submap_scan_matcher = submap_scan_matchers_[submap_id];
+  kNumSubmapScanMatchersMetric->Set(submap_scan_matchers_.size());
   submap_scan_matcher.grid = grid;
   auto& scan_matcher_options = options_.fast_correlative_scan_matcher_options();
   auto scan_matcher_task = absl::make_unique<common::Task>();
@@ -303,6 +311,8 @@ void ConstraintBuilder2D::DeleteScanMatcher(const SubmapId& submap_id) {
         << "DeleteScanMatcher was called while WhenDone was scheduled.";
   }
   submap_scan_matchers_.erase(submap_id);
+  per_submap_sampler_.erase(submap_id);
+  kNumSubmapScanMatchersMetric->Set(submap_scan_matchers_.size());
 }
 
 void ConstraintBuilder2D::RegisterMetrics(metrics::FamilyFactory* factory) {
@@ -326,6 +336,10 @@ void ConstraintBuilder2D::RegisterMetrics(metrics::FamilyFactory* factory) {
       "Constraint scores built", boundaries);
   kConstraintScoresMetric = scores->Add({{"search_region", "local"}});
   kGlobalConstraintScoresMetric = scores->Add({{"search_region", "global"}});
+  auto* num_matchers = factory->NewGaugeFamily(
+      "mapping_constraints_constraint_builder_2d_num_submap_scan_matchers",
+      "Current number of constructed submap scan matchers");
+  kNumSubmapScanMatchersMetric = num_matchers->Add({});
 }
 
 }  // namespace constraints

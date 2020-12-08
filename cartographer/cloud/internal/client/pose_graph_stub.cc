@@ -15,6 +15,7 @@
  */
 
 #include "cartographer/cloud/internal/client/pose_graph_stub.h"
+
 #include "async_grpc/client.h"
 #include "cartographer/cloud/internal/handlers/delete_trajectory_handler.h"
 #include "cartographer/cloud/internal/handlers/get_all_submap_poses.h"
@@ -48,6 +49,11 @@ void PoseGraphStub::RunFinalOptimization() {
 
 mapping::MapById<mapping::SubmapId, mapping::PoseGraphInterface::SubmapData>
 PoseGraphStub::GetAllSubmapData() const {
+  LOG(FATAL) << "Not implemented";
+}
+
+mapping::PoseGraphInterface::SubmapData PoseGraphStub::GetSubmapData(
+    const mapping::SubmapId& submap_id) const {
   LOG(FATAL) << "Not implemented";
 }
 
@@ -138,7 +144,8 @@ std::map<std::string, transform::Rigid3d> PoseGraphStub::GetLandmarkPoses()
 }
 
 void PoseGraphStub::SetLandmarkPose(const std::string& landmark_id,
-                                    const transform::Rigid3d& global_pose) {
+                                    const transform::Rigid3d& global_pose,
+                                    const bool frozen) {
   proto::SetLandmarkPoseRequest request;
   request.mutable_landmark_pose()->set_landmark_id(landmark_id);
   *request.mutable_landmark_pose()->mutable_global_pose() =

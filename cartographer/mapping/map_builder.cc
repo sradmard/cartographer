@@ -17,6 +17,7 @@
 #include "cartographer/mapping/map_builder.h"
 
 #include "absl/memory/memory.h"
+#include "absl/types/optional.h"
 #include "cartographer/common/time.h"
 #include "cartographer/io/internal/mapping_state_serialization.h"
 #include "cartographer/io/proto_stream.h"
@@ -28,7 +29,7 @@
 #include "cartographer/mapping/internal/3d/pose_graph_3d.h"
 #include "cartographer/mapping/internal/collated_trajectory_builder.h"
 #include "cartographer/mapping/internal/global_trajectory_builder.h"
-#include "cartographer/mapping/proto/internal/legacy_serialized_data.pb.h"
+#include "cartographer/mapping/internal/motion_filter.h"
 #include "cartographer/sensor/internal/collator.h"
 #include "cartographer/sensor/internal/trajectory_collator.h"
 #include "cartographer/sensor/internal/voxel_filter.h"
@@ -73,22 +74,6 @@ void MaybeAddPureLocalizationTrimmer(
 
 }  // namespace
 
-proto::MapBuilderOptions CreateMapBuilderOptions(
-    common::LuaParameterDictionary* const parameter_dictionary) {
-  proto::MapBuilderOptions options;
-  options.set_use_trajectory_builder_2d(
-      parameter_dictionary->GetBool("use_trajectory_builder_2d"));
-  options.set_use_trajectory_builder_3d(
-      parameter_dictionary->GetBool("use_trajectory_builder_3d"));
-  options.set_num_background_threads(
-      parameter_dictionary->GetNonNegativeInt("num_background_threads"));
-  *options.mutable_pose_graph_options() = CreatePoseGraphOptions(
-      parameter_dictionary->GetDictionary("pose_graph").get());
-  CHECK_NE(options.use_trajectory_builder_2d(),
-           options.use_trajectory_builder_3d());
-  return options;
-}
-
 MapBuilder::MapBuilder(const proto::MapBuilderOptions& options)
     : options_(options), thread_pool_(options.num_background_threads()) {
   CHECK(options.use_trajectory_builder_2d() ^
@@ -119,6 +104,14 @@ int MapBuilder::AddTrajectoryBuilder(
     const proto::TrajectoryBuilderOptions& trajectory_options,
     LocalSlamResultCallback local_slam_result_callback) {
   const int trajectory_id = trajectory_builders_.size();
+
+  absl::optional<MotionFilter> pose_graph_odometry_motion_filter;
+  if (trajectory_options.has_pose_graph_odometry_motion_filter()) {
+    LOG(INFO) << "Using a motion filter for adding odometry to the pose graph.";
+    pose_graph_odometry_motion_filter.emplace(
+        MotionFilter(trajectory_options.pose_graph_odometry_motion_filter()));
+  }
+
   if (options_.use_trajectory_builder_3d()) {
     std::unique_ptr<LocalTrajectoryBuilder3D> local_trajectory_builder;
     if (trajectory_options.has_trajectory_builder_3d_options()) {
@@ -133,7 +126,7 @@ int MapBuilder::AddTrajectoryBuilder(
         CreateGlobalTrajectoryBuilder3D(
             std::move(local_trajectory_builder), trajectory_id,
             static_cast<PoseGraph3D*>(pose_graph_.get()),
-            local_slam_result_callback)));
+            local_slam_result_callback, pose_graph_odometry_motion_filter)));
   } else {
     std::unique_ptr<LocalTrajectoryBuilder2D> local_trajectory_builder;
     if (trajectory_options.has_trajectory_builder_2d_options()) {
@@ -148,7 +141,7 @@ int MapBuilder::AddTrajectoryBuilder(
         CreateGlobalTrajectoryBuilder2D(
             std::move(local_trajectory_builder), trajectory_id,
             static_cast<PoseGraph2D*>(pose_graph_.get()),
-            local_slam_result_callback)));
+            local_slam_result_callback, pose_graph_odometry_motion_filter)));
   }
   MaybeAddPureLocalizationTrimmer(trajectory_id, trajectory_options,
                                   pose_graph_.get());
@@ -279,11 +272,18 @@ std::map<int, int> MapBuilder::LoadState(
   // Set global poses of landmarks.
   for (const auto& landmark : pose_graph_proto.landmark_poses()) {
     pose_graph_->SetLandmarkPose(landmark.landmark_id(),
-                                 transform::ToRigid3(landmark.global_pose()));
+                                 transform::ToRigid3(landmark.global_pose()),
+                                 true);
   }
 
-  MapById<SubmapId, mapping::proto::Submap> submap_id_to_submap;
-  MapById<NodeId, mapping::proto::Node> node_id_to_node;
+  if (options_.use_trajectory_builder_3d()) {
+    CHECK_NE(deserializer.header().format_version(),
+             io::kFormatVersionWithoutSubmapHistograms)
+        << "The pbstream file contains submaps without rotational histograms. "
+           "This can be converted with the 'pbstream migrate' tool, see the "
+           "Cartographer documentation for details. ";
+  }
+
   SerializedData proto;
   while (deserializer.ReadNextSerializedData(&proto)) {
     switch (proto.data_case()) {
@@ -300,10 +300,10 @@ std::map<int, int> MapBuilder::LoadState(
         proto.mutable_submap()->mutable_submap_id()->set_trajectory_id(
             trajectory_remapping.at(
                 proto.submap().submap_id().trajectory_id()));
-        submap_id_to_submap.Insert(
-            SubmapId{proto.submap().submap_id().trajectory_id(),
-                     proto.submap().submap_id().submap_index()},
-            proto.submap());
+        const SubmapId submap_id(proto.submap().submap_id().trajectory_id(),
+                                 proto.submap().submap_id().submap_index());
+        pose_graph_->AddSubmapFromProto(submap_poses.at(submap_id),
+                                        proto.submap());
         break;
       }
       case SerializedData::kNode: {
@@ -313,7 +313,6 @@ std::map<int, int> MapBuilder::LoadState(
                              proto.node().node_id().node_index());
         const transform::Rigid3d& node_pose = node_poses.at(node_id);
         pose_graph_->AddNodeFromProto(node_pose, proto.node());
-        node_id_to_node.Insert(node_id, proto.node());
         break;
       }
       case SerializedData::kTrajectoryData: {
@@ -358,20 +357,6 @@ std::map<int, int> MapBuilder::LoadState(
     }
   }
 
-  // TODO(schwoere): Remove backwards compatibility once the pbstream format
-  // version 2 is established.
-  if (deserializer.header().format_version() ==
-      io::kFormatVersionWithoutSubmapHistograms) {
-    submap_id_to_submap =
-        cartographer::io::MigrateSubmapFormatVersion1ToVersion2(
-            submap_id_to_submap, node_id_to_node, pose_graph_proto);
-  }
-
-  for (const auto& submap_id_submap : submap_id_to_submap) {
-    pose_graph_->AddSubmapFromProto(submap_poses.at(submap_id_submap.id),
-                                    submap_id_submap.data);
-  }
-
   if (load_frozen_state) {
     // Add information about which nodes belong to which submap.
     // Required for 3D pure localization.
@@ -409,6 +394,11 @@ std::map<int, int> MapBuilder::LoadStateFromFile(
   LOG(INFO) << "Loading saved state '" << state_filename << "'...";
   io::ProtoStreamReader stream(state_filename);
   return LoadState(&stream, load_frozen_state);
+}
+
+std::unique_ptr<MapBuilderInterface> CreateMapBuilder(
+    const proto::MapBuilderOptions& options) {
+  return absl::make_unique<MapBuilder>(options);
 }
 
 }  // namespace mapping

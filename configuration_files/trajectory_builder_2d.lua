@@ -59,7 +59,30 @@ TRAJECTORY_BUILDER_2D = {
     max_angle_radians = math.rad(1.),
   },
 
+  -- TODO(schwoere,wohe): Remove this constant. This is only kept for ROS.
   imu_gravity_time_constant = 10.,
+  pose_extrapolator = {
+    use_imu_based = false,
+    constant_velocity = {
+      imu_gravity_time_constant = 10.,
+      pose_queue_duration = 0.001,
+    },
+    imu_based = {
+      pose_queue_duration = 5.,
+      gravity_constant = 9.806,
+      pose_translation_weight = 1.,
+      pose_rotation_weight = 1.,
+      imu_acceleration_weight = 1.,
+      imu_rotation_weight = 1.,
+      odometry_translation_weight = 1.,
+      odometry_rotation_weight = 1.,
+      solver_options = {
+        use_nonmonotonic_steps = false;
+        max_num_iterations = 10;
+        num_threads = 1;
+      },
+    },
+  },
 
   submaps = {
     num_range_data = 90,
@@ -84,8 +107,8 @@ TRAJECTORY_BUILDER_2D = {
         },
         project_sdf_distance_to_scan_normal = true,
         update_weight_range_exponent = 0,
-        update_weight_angle_scan_normal_to_ray_kernel_bandwith = 0.5,
-        update_weight_distance_cell_to_hit_kernel_bandwith = 0.5,
+        update_weight_angle_scan_normal_to_ray_kernel_bandwidth = 0.5,
+        update_weight_distance_cell_to_hit_kernel_bandwidth = 0.5,
       },
     },
   },

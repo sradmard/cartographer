@@ -24,13 +24,15 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 
 #include "Eigen/Eigenvalues"
 #include "absl/memory/memory.h"
 #include "cartographer/common/math.h"
 #include "cartographer/common/thread_pool.h"
-#include "cartographer/mapping/proto/scan_matching//ceres_scan_matcher_options_3d.pb.h"
-#include "cartographer/mapping/proto/scan_matching//fast_correlative_scan_matcher_options_3d.pb.h"
+#include "cartographer/mapping/proto/scan_matching/ceres_scan_matcher_options_3d.pb.h"
+#include "cartographer/mapping/proto/scan_matching/fast_correlative_scan_matcher_options_3d.pb.h"
 #include "cartographer/metrics/counter.h"
 #include "cartographer/metrics/gauge.h"
 #include "cartographer/metrics/histogram.h"
@@ -54,6 +56,7 @@ static auto* kGlobalConstraintRotationalScoresMetric =
     metrics::Histogram::Null();
 static auto* kGlobalConstraintLowResolutionScoresMetric =
     metrics::Histogram::Null();
+static auto* kNumSubmapScanMatchersMetric = metrics::Gauge::Null();
 
 ConstraintBuilder3D::ConstraintBuilder3D(
     const proto::ConstraintBuilderOptions& options,
@@ -62,7 +65,6 @@ ConstraintBuilder3D::ConstraintBuilder3D(
       thread_pool_(thread_pool),
       finish_node_task_(absl::make_unique<common::Task>()),
       when_done_task_(absl::make_unique<common::Task>()),
-      sampler_(options.sampling_ratio()),
       ceres_scan_matcher_(options.ceres_scan_matcher_options_3d()) {}
 
 ConstraintBuilder3D::~ConstraintBuilder3D() {
@@ -83,7 +85,12 @@ void ConstraintBuilder3D::MaybeAddConstraint(
           .norm() > options_.max_constraint_distance()) {
     return;
   }
-  if (!sampler_.Pulse()) return;
+  if (!per_submap_sampler_
+           .emplace(std::piecewise_construct, std::forward_as_tuple(submap_id),
+                    std::forward_as_tuple(options_.sampling_ratio()))
+           .first->second.Pulse()) {
+    return;
+  }
 
   absl::MutexLock locker(&mutex_);
   if (when_done_) {
@@ -167,6 +174,7 @@ ConstraintBuilder3D::DispatchScanMatcherConstruction(const SubmapId& submap_id,
     return &submap_scan_matchers_.at(submap_id);
   }
   auto& submap_scan_matcher = submap_scan_matchers_[submap_id];
+  kNumSubmapScanMatchersMetric->Set(submap_scan_matchers_.size());
   submap_scan_matcher.high_resolution_hybrid_grid =
       &submap->high_resolution_hybrid_grid();
   submap_scan_matcher.low_resolution_hybrid_grid =
@@ -259,9 +267,11 @@ void ConstraintBuilder3D::ComputeConstraint(
   ceres_scan_matcher_.Match(match_result->pose_estimate.translation(),
                             match_result->pose_estimate,
                             {{&constant_data->high_resolution_point_cloud,
-                              submap_scan_matcher.high_resolution_hybrid_grid},
+                              submap_scan_matcher.high_resolution_hybrid_grid,
+                              /*intensity_hybrid_grid=*/nullptr},
                              {&constant_data->low_resolution_point_cloud,
-                              submap_scan_matcher.low_resolution_hybrid_grid}},
+                              submap_scan_matcher.low_resolution_hybrid_grid,
+                              /*intensity_hybrid_grid=*/nullptr}},
                             &constraint_transform, &unused_summary);
 
   constraint->reset(new Constraint{
@@ -334,6 +344,8 @@ void ConstraintBuilder3D::DeleteScanMatcher(const SubmapId& submap_id) {
         << "DeleteScanMatcher was called while WhenDone was scheduled.";
   }
   submap_scan_matchers_.erase(submap_id);
+  per_submap_sampler_.erase(submap_id);
+  kNumSubmapScanMatchersMetric->Set(submap_scan_matchers_.size());
 }
 
 void ConstraintBuilder3D::RegisterMetrics(metrics::FamilyFactory* factory) {
@@ -367,6 +379,10 @@ void ConstraintBuilder3D::RegisterMetrics(metrics::FamilyFactory* factory) {
       scores->Add({{"search_region", "global"}, {"kind", "rotational_score"}});
   kGlobalConstraintLowResolutionScoresMetric = scores->Add(
       {{"search_region", "global"}, {"kind", "low_resolution_score"}});
+  auto* num_matchers = factory->NewGaugeFamily(
+      "mapping_constraints_constraint_builder_3d_num_submap_scan_matchers",
+      "Current number of constructed submap scan matchers");
+  kNumSubmapScanMatchersMetric = num_matchers->Add({});
 }
 
 }  // namespace constraints

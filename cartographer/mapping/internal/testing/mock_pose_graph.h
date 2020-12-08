@@ -34,6 +34,7 @@ class MockPoseGraph : public mapping::PoseGraphInterface {
   MOCK_METHOD0(RunFinalOptimization, void());
   MOCK_CONST_METHOD0(GetAllSubmapData,
                      mapping::MapById<mapping::SubmapId, SubmapData>());
+  MOCK_CONST_METHOD1(GetSubmapData, SubmapData(const SubmapId&));
   MOCK_CONST_METHOD0(GetAllSubmapPoses,
                      mapping::MapById<mapping::SubmapId, SubmapPose>());
   MOCK_CONST_METHOD1(GetLocalToGlobalTransform, transform::Rigid3d(int));
@@ -48,8 +49,8 @@ class MockPoseGraph : public mapping::PoseGraphInterface {
       std::map<int, mapping::PoseGraphInterface::TrajectoryState>());
   MOCK_CONST_METHOD0(GetLandmarkPoses,
                      std::map<std::string, transform::Rigid3d>());
-  MOCK_METHOD2(SetLandmarkPose,
-               void(const std::string&, const transform::Rigid3d&));
+  MOCK_METHOD3(SetLandmarkPose,
+               void(const std::string&, const transform::Rigid3d&, const bool));
   MOCK_METHOD1(DeleteTrajectory, void(int));
   MOCK_CONST_METHOD1(IsTrajectoryFinished, bool(int));
   MOCK_CONST_METHOD1(IsTrajectoryFrozen, bool(int));

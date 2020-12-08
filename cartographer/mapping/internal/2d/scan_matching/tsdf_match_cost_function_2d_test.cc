@@ -20,7 +20,6 @@
 #include "cartographer/common/lua_parameter_dictionary_test_helpers.h"
 #include "cartographer/mapping/2d/tsdf_2d.h"
 #include "cartographer/mapping/2d/tsdf_range_data_inserter_2d.h"
-
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -48,15 +47,15 @@ class TSDFSpaceCostFunction2DTest : public ::testing::Test {
         "},"
         "project_sdf_distance_to_scan_normal = true,"
         "update_weight_range_exponent = 0,"
-        "update_weight_angle_scan_normal_to_ray_kernel_bandwith = 0,"
-        "update_weight_distance_cell_to_hit_kernel_bandwith = 0,"
+        "update_weight_angle_scan_normal_to_ray_kernel_bandwidth = 0,"
+        "update_weight_distance_cell_to_hit_kernel_bandwidth = 0,"
         "}");
     options_ = CreateTSDFRangeDataInserterOptions2D(parameter_dictionary.get());
     range_data_inserter_ = absl::make_unique<TSDFRangeDataInserter2D>(options_);
   }
 
   void InsertPointcloud() {
-    sensor::RangeData range_data;
+    auto range_data = sensor::RangeData();
     for (float x = -.5; x < 0.5f; x += 0.1) {
       range_data.returns.push_back({Eigen::Vector3f{x, 1.0f, 0.f}});
     }
@@ -73,7 +72,7 @@ class TSDFSpaceCostFunction2DTest : public ::testing::Test {
 };
 
 TEST_F(TSDFSpaceCostFunction2DTest, MatchEmptyTSDF) {
-  const sensor::PointCloud matching_cloud = {{Eigen::Vector3f{0.f, 0.f, 0.f}}};
+  const sensor::PointCloud matching_cloud({{Eigen::Vector3f{0.f, 0.f, 0.f}}});
   std::unique_ptr<ceres::CostFunction> cost_function(
       CreateTSDFMatchCostFunction2D(1.f, matching_cloud, tsdf_));
   const std::array<double, 3> pose_estimate{{0., 0., 0.}};
@@ -89,7 +88,7 @@ TEST_F(TSDFSpaceCostFunction2DTest, MatchEmptyTSDF) {
 
 TEST_F(TSDFSpaceCostFunction2DTest, ExactInitialPose) {
   InsertPointcloud();
-  const sensor::PointCloud matching_cloud = {{Eigen::Vector3f{0.f, 1.0f, 0.f}}};
+  const sensor::PointCloud matching_cloud({{Eigen::Vector3f{0.f, 1.0f, 0.f}}});
   std::unique_ptr<ceres::CostFunction> cost_function(
       CreateTSDFMatchCostFunction2D(1.f, matching_cloud, tsdf_));
   const std::array<double, 3> pose_estimate{{0., 0., 0.}};
@@ -109,7 +108,7 @@ TEST_F(TSDFSpaceCostFunction2DTest, ExactInitialPose) {
 
 TEST_F(TSDFSpaceCostFunction2DTest, PertubatedInitialPose) {
   InsertPointcloud();
-  sensor::PointCloud matching_cloud = {{Eigen::Vector3f{0.f, 1.0f, 0.f}}};
+  sensor::PointCloud matching_cloud({{Eigen::Vector3f{0.f, 1.0f, 0.f}}});
   std::unique_ptr<ceres::CostFunction> cost_function(
       CreateTSDFMatchCostFunction2D(1.f, matching_cloud, tsdf_));
   std::array<double, 3> pose_estimate{{0., 0.1, 0.}};
@@ -140,7 +139,7 @@ TEST_F(TSDFSpaceCostFunction2DTest, PertubatedInitialPose) {
 
 TEST_F(TSDFSpaceCostFunction2DTest, InvalidInitialPose) {
   InsertPointcloud();
-  sensor::PointCloud matching_cloud = {{Eigen::Vector3f{0.f, 1.0f, 0.f}}};
+  sensor::PointCloud matching_cloud({{Eigen::Vector3f{0.f, 1.0f, 0.f}}});
   std::unique_ptr<ceres::CostFunction> cost_function(
       CreateTSDFMatchCostFunction2D(1.f, matching_cloud, tsdf_));
   std::array<double, 3> pose_estimate{{0., 0.4, 0.}};

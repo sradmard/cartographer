@@ -17,20 +17,16 @@
 #ifndef CARTOGRAPHER_MAPPING_MAP_BUILDER_H_
 #define CARTOGRAPHER_MAPPING_MAP_BUILDER_H_
 
-#include "cartographer/mapping/map_builder_interface.h"
-
 #include <memory>
 
 #include "cartographer/common/thread_pool.h"
+#include "cartographer/mapping/map_builder_interface.h"
 #include "cartographer/mapping/pose_graph.h"
 #include "cartographer/mapping/proto/map_builder_options.pb.h"
 #include "cartographer/sensor/collator_interface.h"
 
 namespace cartographer {
 namespace mapping {
-
-proto::MapBuilderOptions CreateMapBuilderOptions(
-    common::LuaParameterDictionary *const parameter_dictionary);
 
 // Wires up the complete SLAM stack with TrajectoryBuilders (for local submaps)
 // and a PoseGraph for loop closure.
@@ -98,6 +94,9 @@ class MapBuilder : public MapBuilderInterface {
   std::vector<proto::TrajectoryBuilderOptionsWithSensorIds>
       all_trajectory_builder_options_;
 };
+
+std::unique_ptr<MapBuilderInterface> CreateMapBuilder(
+    const proto::MapBuilderOptions& options);
 
 }  // namespace mapping
 }  // namespace cartographer

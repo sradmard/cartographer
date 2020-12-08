@@ -68,7 +68,7 @@ void AddPointCloudSliceToHistogram(const sensor::PointCloud& slice,
   // will add the angle between points to the histogram with the maximum weight.
   // This is to reject, e.g., the angles observed on the ceiling and floor.
   const Eigen::Vector3f centroid = ComputeCentroid(slice);
-  Eigen::Vector3f last_point_position = slice.front().position;
+  Eigen::Vector3f last_point_position = slice.points().front().position;
   for (const sensor::RangefinderPoint& point : slice) {
     const Eigen::Vector2f delta =
         (point.position - last_point_position).head<2>();
@@ -140,9 +140,13 @@ RotationalScanMatcher::RotationalScanMatcher(const Eigen::VectorXf* histogram)
 // rotations of a fractional bucket which is handled by linearly interpolating.
 Eigen::VectorXf RotationalScanMatcher::RotateHistogram(
     const Eigen::VectorXf& histogram, const float angle) {
+  if (histogram.size() == 0) {
+    return histogram;
+  }
   const float rotate_by_buckets = -angle * histogram.size() / M_PI;
   int full_buckets = common::RoundToInt(rotate_by_buckets - 0.5f);
   const float fraction = rotate_by_buckets - full_buckets;
+  CHECK_GT(histogram.size(), 0);
   while (full_buckets < 0) {
     full_buckets += histogram.size();
   }
